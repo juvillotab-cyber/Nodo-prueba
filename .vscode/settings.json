@@ -5,15 +5,8 @@
     "board/esp32c6-builtin.cfg"
   ],
   "idf.port": "/dev/ttyACM0",
-  "idf.currentSetup": "/home/juan-david/.espressif/v5.5.4/esp-idf",
   "idf.customExtraVars": {
     "IDF_TARGET": "esp32c6"
   },
-  "clangd.path": "/home/juan-david/.espressif/tools/esp-clang/esp-19.1.2_20250312/esp-clang/bin/clangd",
-  "clangd.arguments": [
-    "--background-index",
-    "--query-driver=**",
-    "--compile-commands-dir=/home/juan-david/Documentos/Semestre_VII/Semillero-IOT/Nodo-ot_cli/build"
-  ],
   "idf.flashType": "JTAG"
 }
