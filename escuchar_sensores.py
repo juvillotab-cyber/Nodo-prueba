@@ -1,62 +1,75 @@
 #!/usr/bin/env python3
-import socket
-import struct
+import subprocess
+import select
 import json
+import time
+import sys
 
 try:
     import paho.mqtt.client as mqtt
     HAS_MQTT = True
 except ImportError:
     HAS_MQTT = False
-    print("  [INFO] paho-mqtt no instalado. Solo se imprimirá en consola.")
-    print("  Para instalarlo: pip install paho-mqtt")
-
-PUERTO = 5689
-GRUPO_MULTICAST = "ff03::1"
 
 THINGSBOARD_HOST = "localhost"
 THINGSBOARD_PORT = 1883
-THINGSBOARD_TOKEN = "COLOCA_AQUI_TU_TOKEN"
+THINGSBOARD_TOKEN = "8iItxXH5faM3npql5T6d"
 
 mqtt_client = None
 if HAS_MQTT:
+    def on_connect(c, u, f, r, v):
+        print("  MQTT conectado", flush=True)
     mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
     mqtt_client.username_pw_set(THINGSBOARD_TOKEN)
-    mqtt_client.on_connect = lambda c, u, f, r, v: print(f"  MQTT conectado (rc={v})")
+    mqtt_client.on_connect = on_connect
     try:
         mqtt_client.connect(THINGSBOARD_HOST, THINGSBOARD_PORT, 60)
         mqtt_client.loop_start()
     except Exception as e:
-        print(f"  [WARN] No se pudo conectar a ThingsBoard: {e}")
+        print(f"  [WARN] MQTT: {e}", flush=True)
         mqtt_client = None
 
-sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
-sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+print("  Iniciando listener Thread...", flush=True)
 
-for iface_name in ["wpan0", "eth0", "wlan0"]:
-    try:
-        ifidx = socket.if_nametoindex(iface_name)
-        sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP,
-                        struct.pack("16sI", socket.inet_pton(socket.AF_INET6, GRUPO_MULTICAST), ifidx))
-        print(f"  unido a {GRUPO_MULTICAST} en {iface_name}")
-    except (OSError, AttributeError):
-        pass
+proc = subprocess.Popen(
+    ["docker", "exec", "-i", "otbr", "script", "-q", "-c", "ot-ctl", "/dev/null"],
+    stdin=subprocess.PIPE,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.STDOUT,
+)
 
-sock.bind(("", PUERTO))
-print(f"Escuchando en puerto {PUERTO} ...")
+time.sleep(3)
+proc.stdin.write(b"udp open\n")
+proc.stdin.flush()
+time.sleep(0.5)
+proc.stdin.write(b"udp bind :: 5689\n")
+proc.stdin.flush()
+print("  Escuchando en puerto 5689 (Thread)", flush=True)
+
+buf = b""
 
 while True:
-    datos, addr = sock.recvfrom(1024)
-    try:
-        msg = json.loads(datos.decode())
-        print(f"[{addr[0]}] node={msg['node_id']}  seq={msg['seq']}  temp={msg['temp']}°C")
+    r, _, _ = select.select([proc.stdout], [], [], 5)
+    if not r:
+        continue
+    chunk = proc.stdout.read1(4096)
+    if not chunk:
+        break
+    buf += chunk
+    while b"\n" in buf:
+        line, buf = buf.split(b"\n", 1)
+        line = line.strip()
+        if not line or b"Done" in line or line == b">" or b"udp " in line:
+            continue
+        if b"bytes from" in line:
+            try:
+                parts = line.split(b"}")[0].split(b"{", 1)
+                if len(parts) == 2:
+                    msg = json.loads(b"{" + parts[1] + b"}")
+                    print(f"[{msg.get('node_id','?')}] seq={msg.get('seq','?')}  temp={msg.get('temp','?')}°C", flush=True)
+                    if mqtt_client:
+                        mqtt_client.publish("v1/devices/me/telemetry", json.dumps(msg))
+            except Exception:
+                pass
 
-        if mqtt_client:
-            telemetry = json.dumps({
-                "node_id": msg["node_id"],
-                "temperature": msg["temp"],
-                "seq": msg["seq"]
-            })
-            mqtt_client.publish("v1/devices/me/telemetry", telemetry)
-    except Exception as e:
-        print(f"[{addr[0]}] error: {e}")
+print("  [INFO] Cerrando...", flush=True)
